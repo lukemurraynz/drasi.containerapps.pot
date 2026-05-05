@@ -441,8 +441,8 @@
   "dependencies": {
     "@vscode/webview-ui-toolkit": "^1.4.0",
     "ajv": "^8.20.0",
-    "axios": "^1.15.2",
+    "axios": "^1.16.0",
     "js-yaml": "^4.1.0",
-    "yaml": "^2.8.3"
+    "yaml": "^2.8.4"
   }
 }
