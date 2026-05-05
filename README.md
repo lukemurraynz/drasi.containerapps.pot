@@ -1,6 +1,6 @@
 # Drasi Apps Infrastructure - PoT (Proof of Technology)
 
-Azure infrastructure for Drasi on Azure Container Apps.
+Azure infrastructure for [Drasi](https://drasi.io/) on [Azure Container Apps](https://learn.microsoft.com/azure/container-apps/overview?WT.mc_id=AZ-MVP-5004796).
 
 ## State and replica readiness
 
