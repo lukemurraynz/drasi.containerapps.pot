@@ -1,4 +1,4 @@
-# Drasi Apps Infrastructure
+# Drasi Apps Infrastructure - PoT (Proof of Technology)
 
 Azure infrastructure for Drasi on Azure Container Apps.
 
