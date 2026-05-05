@@ -1,0 +1,174 @@
+// Copyright 2025 The Drasi Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Tests for default query language behavior.
+//!
+//! This test module verifies that:
+//! 1. The default query language is GQL when not specified
+//! 2. The default can be overridden by explicitly setting queryLanguage
+//! 3. Both GQL and Cypher are supported
+
+use drasi_lib::config::QueryLanguage;
+use drasi_server::api::mappings::{ConfigMapper, DtoMapper, QueryConfigMapper};
+use drasi_server::api::models::{QueryConfigDto, SourceSubscriptionConfigDto};
+
+#[test]
+fn test_default_query_language_is_gql() {
+    // Test YAML without queryLanguage field deserializes with GQL default
+    // This tests the Serde default mechanism
+    let yaml = r#"
+id: test-query
+query: "MATCH (n) RETURN n"
+sources:
+  - sourceId: test-source
+"#;
+
+    let dto: QueryConfigDto = serde_yaml::from_str(yaml).expect("Should deserialize");
+
+    // Map to verify the default is applied correctly
+    let mapper = QueryConfigMapper;
+    let resolver = DtoMapper::new();
+    let config = mapper
+        .map(&dto, &resolver)
+        .expect("Should map successfully");
+
+    assert_eq!(
+        config.query_language,
+        QueryLanguage::GQL,
+        "Default query language should be GQL when not specified in YAML"
+    );
+}
+
+#[test]
+fn test_explicit_cypher_language() {
+    // Create a query config with explicit Cypher language
+    let dto = QueryConfigDto {
+        id: "test-query".to_string(),
+        auto_start: false,
+        query: "MATCH (n) RETURN n".to_string(),
+        query_language: QueryLanguage::Cypher,
+        middleware: vec![],
+        sources: vec![SourceSubscriptionConfigDto {
+            source_id: "test-source".to_string(),
+            nodes: vec![],
+            relations: vec![],
+            pipeline: vec![],
+        }],
+        enable_bootstrap: true,
+        bootstrap_buffer_size: 10000,
+        joins: None,
+        priority_queue_capacity: None,
+        dispatch_buffer_capacity: None,
+        dispatch_mode: None,
+        storage_backend: None,
+    };
+
+    // Map the DTO to a QueryConfig
+    let mapper = QueryConfigMapper;
+    let resolver = DtoMapper::new();
+    let config = mapper
+        .map(&dto, &resolver)
+        .expect("Should map successfully");
+
+    // Verify the language is Cypher
+    assert_eq!(
+        format!("{:?}", config.query_language),
+        "Cypher",
+        "Query language should be Cypher when explicitly set"
+    );
+}
+
+#[test]
+fn test_explicit_gql_language() {
+    // Create a query config with explicit GQL language
+    let dto = QueryConfigDto {
+        id: "test-query".to_string(),
+        auto_start: false,
+        query: "MATCH (n) RETURN n".to_string(),
+        query_language: QueryLanguage::GQL,
+        middleware: vec![],
+        sources: vec![SourceSubscriptionConfigDto {
+            source_id: "test-source".to_string(),
+            nodes: vec![],
+            relations: vec![],
+            pipeline: vec![],
+        }],
+        enable_bootstrap: true,
+        bootstrap_buffer_size: 10000,
+        joins: None,
+        priority_queue_capacity: None,
+        dispatch_buffer_capacity: None,
+        dispatch_mode: None,
+        storage_backend: None,
+    };
+
+    // Map the DTO to a QueryConfig
+    let mapper = QueryConfigMapper;
+    let resolver = DtoMapper::new();
+    let config = mapper
+        .map(&dto, &resolver)
+        .expect("Should map successfully");
+
+    // Verify the language is GQL
+    assert_eq!(
+        format!("{:?}", config.query_language),
+        "GQL",
+        "Query language should be GQL when explicitly set"
+    );
+}
+
+#[test]
+fn test_invalid_query_language_rejected() {
+    // With QueryLanguage as a typed enum, invalid values are rejected at deserialization time.
+    // Test that deserializing an invalid query language from YAML fails.
+    let yaml = r#"
+id: test-query
+query: "MATCH (n) RETURN n"
+queryLanguage: SQL
+sources:
+  - sourceId: test-source
+"#;
+    let result: Result<QueryConfigDto, _> = serde_yaml::from_str(yaml);
+    assert!(
+        result.is_err(),
+        "Invalid query language should be rejected during deserialization"
+    );
+}
+
+#[test]
+fn test_yaml_deserialization_explicit_cypher() {
+    // Test that YAML with queryLanguage: Cypher works correctly
+    let yaml = r#"
+id: test-query
+query: "MATCH (n) RETURN n"
+queryLanguage: Cypher
+sources:
+  - sourceId: test-source
+"#;
+
+    let dto: QueryConfigDto = serde_yaml::from_str(yaml).expect("Should deserialize");
+
+    // Map to verify Cypher is used
+    let mapper = QueryConfigMapper;
+    let resolver = DtoMapper::new();
+    let config = mapper
+        .map(&dto, &resolver)
+        .expect("Should map successfully");
+
+    assert_eq!(
+        format!("{:?}", config.query_language),
+        "Cypher",
+        "Query language should be Cypher when specified in YAML"
+    );
+}

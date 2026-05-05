@@ -1,0 +1,15 @@
+name: drasicapps-prod
+metadata:
+  template: drasicapps-prod-infra@0.1.0
+
+infra:
+  provider: bicep
+  path: azure/prod
+
+hooks:
+  preprovision:
+    shell: pwsh
+    run: ./scripts/azd-preprovision.ps1
+  postprovision:
+    shell: pwsh
+    run: ./scripts/azd-postprovision.ps1

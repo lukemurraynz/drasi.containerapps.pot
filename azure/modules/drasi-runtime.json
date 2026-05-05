@@ -1,0 +1,248 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.42.1.51946",
+      "templateHash": "11602332875134786178"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region"
+      }
+    },
+    "appName": {
+      "type": "string",
+      "metadata": {
+        "description": "Container App name"
+      }
+    },
+    "managedEnvironmentResourceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Container Apps managed environment resource ID"
+      }
+    },
+    "containerImage": {
+      "type": "string",
+      "metadata": {
+        "description": "Immutable Drasi image reference"
+      }
+    },
+    "runtimeConfigSecretUri": {
+      "type": "string",
+      "metadata": {
+        "description": "Key Vault secret URI for runtime server.yaml"
+      }
+    },
+    "postgresHost": {
+      "type": "string",
+      "metadata": {
+        "description": "PostgreSQL host"
+      }
+    },
+    "postgresDatabaseName": {
+      "type": "string",
+      "metadata": {
+        "description": "PostgreSQL database"
+      }
+    },
+    "postgresUserName": {
+      "type": "string",
+      "metadata": {
+        "description": "PostgreSQL user"
+      }
+    },
+    "postgresPasswordSecretUri": {
+      "type": "string",
+      "metadata": {
+        "description": "Key Vault secret URI for PostgreSQL password"
+      }
+    },
+    "redisHost": {
+      "type": "string",
+      "metadata": {
+        "description": "Redis host"
+      }
+    },
+    "redisPasswordSecretUri": {
+      "type": "string",
+      "metadata": {
+        "description": "Key Vault secret URI for Redis password"
+      }
+    },
+    "appInsightsConnectionString": {
+      "type": "string",
+      "metadata": {
+        "description": "Application Insights connection string"
+      }
+    },
+    "tags": {
+      "type": "object",
+      "metadata": {
+        "description": "Tags"
+      }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "[parameters('appName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "environmentId": "[parameters('managedEnvironmentResourceId')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "allowInsecure": false,
+            "targetPort": 8080,
+            "transport": "http"
+          },
+          "secrets": [
+            {
+              "name": "runtime-config",
+              "keyVaultUrl": "[parameters('runtimeConfigSecretUri')]",
+              "identity": "system"
+            },
+            {
+              "name": "postgres-password",
+              "keyVaultUrl": "[parameters('postgresPasswordSecretUri')]",
+              "identity": "system"
+            },
+            {
+              "name": "redis-password",
+              "keyVaultUrl": "[parameters('redisPasswordSecretUri')]",
+              "identity": "system"
+            }
+          ]
+        },
+        "template": {
+          "terminationGracePeriodSeconds": 120,
+          "containers": [
+            {
+              "name": "drasi-server",
+              "image": "[parameters('containerImage')]",
+              "command": [
+                "/bin/sh",
+                "-c",
+                "cp /config-secret/server.yaml /app/config/server.yaml && drasi-server --config /app/config/server.yaml"
+              ],
+              "env": [
+                {
+                  "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                  "value": "[parameters('appInsightsConnectionString')]"
+                },
+                {
+                  "name": "POSTGRES_HOST",
+                  "value": "[parameters('postgresHost')]"
+                },
+                {
+                  "name": "POSTGRES_DATABASE",
+                  "value": "[parameters('postgresDatabaseName')]"
+                },
+                {
+                  "name": "POSTGRES_USER",
+                  "value": "[parameters('postgresUserName')]"
+                },
+                {
+                  "name": "POSTGRES_PASSWORD",
+                  "secretRef": "postgres-password"
+                },
+                {
+                  "name": "REDIS_HOST",
+                  "value": "[parameters('redisHost')]"
+                },
+                {
+                  "name": "REDIS_PASSWORD",
+                  "secretRef": "redis-password"
+                }
+              ],
+              "probes": [
+                {
+                  "type": "Startup",
+                  "httpGet": {
+                    "path": "/health",
+                    "port": 8080
+                  },
+                  "initialDelaySeconds": 10,
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 3
+                },
+                {
+                  "type": "Liveness",
+                  "httpGet": {
+                    "path": "/health",
+                    "port": 8080
+                  },
+                  "initialDelaySeconds": 30,
+                  "periodSeconds": 10,
+                  "timeoutSeconds": 3
+                },
+                {
+                  "type": "Readiness",
+                  "httpGet": {
+                    "path": "/health",
+                    "port": 8080
+                  },
+                  "initialDelaySeconds": 15,
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 3
+                }
+              ],
+              "resources": {
+                "cpu": 1,
+                "memory": "2Gi"
+              },
+              "volumeMounts": [
+                {
+                  "volumeName": "config-volume",
+                  "mountPath": "/config-secret"
+                }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name": "config-volume",
+              "storageType": "Secret",
+              "secrets": [
+                {
+                  "secretRef": "runtime-config",
+                  "path": "server.yaml"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 1
+          }
+        }
+      },
+      "tags": "[parameters('tags')]"
+    }
+  ],
+  "outputs": {
+    "drasiUrl": {
+      "type": "string",
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.App/containerApps', parameters('appName')), '2024-03-01').configuration.ingress.fqdn)]"
+    },
+    "docsUrl": {
+      "type": "string",
+      "value": "[format('https://{0}/api/v1/docs/', reference(resourceId('Microsoft.App/containerApps', parameters('appName')), '2024-03-01').configuration.ingress.fqdn)]"
+    },
+    "principalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', parameters('appName')), '2024-03-01', 'full').identity.principalId]"
+    }
+  }
+}

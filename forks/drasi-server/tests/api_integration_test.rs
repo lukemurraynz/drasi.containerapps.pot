@@ -1,0 +1,732 @@
+// Copyright 2025 The Drasi Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! API Integration Tests
+//!
+//! These tests validate the complete data flow from API requests to DrasiLib operations.
+//! They test the full lifecycle of components through the API, including dynamic creation
+//! of sources and reactions via the tagged enum config format.
+
+#![allow(clippy::unwrap_used)]
+
+mod test_support;
+
+use test_support::{create_mock_reaction, create_mock_source};
+
+use axum::{
+    body::{to_bytes, Body},
+    http::{Request, StatusCode},
+    Router,
+};
+use drasi_lib::Query;
+use drasi_server::api::v1::handlers;
+use drasi_server::instance_registry::InstanceRegistry;
+use futures_util::StreamExt;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::timeout;
+use tower::ServiceExt;
+
+/// Helper to create a test router with all dependencies
+async fn create_test_router() -> (Router, Arc<drasi_lib::DrasiLib>, TestComponentRegistry) {
+    use drasi_lib::DrasiLib;
+    use drasi_server::api::v1::routes::build_v1_router;
+    use drasi_server::plugin_registry::PluginRegistry;
+
+    // Create mock source instances
+    let test_source = create_mock_source("test-source");
+    let query_source = create_mock_source("query-source");
+    let auto_source = create_mock_source("auto-source");
+    let log_source = create_mock_source("log-source");
+
+    // Create mock reaction instances
+    let test_reaction = create_mock_reaction("test-reaction", vec!["reaction-query".to_string()]);
+    let auto_reaction = create_mock_reaction("auto-reaction", vec!["auto-query".to_string()]);
+
+    // Create a minimal DrasiLib using the builder with mock instances
+    let core = DrasiLib::builder()
+        .with_id("test-server")
+        .with_source(test_source.clone())
+        .with_source(query_source.clone())
+        .with_source(auto_source.clone())
+        .with_source(log_source.clone())
+        .with_query(
+            Query::cypher("reaction-query")
+                .query("MATCH (n:Node) RETURN n")
+                .from_source("query-source")
+                .auto_start(false)
+                .build(),
+        )
+        .with_query(
+            Query::cypher("auto-query")
+                .query("MATCH (n:Node) RETURN n")
+                .from_source("auto-source")
+                .auto_start(false)
+                .build(),
+        )
+        .with_reaction(test_reaction.clone())
+        .with_reaction(auto_reaction.clone())
+        .build()
+        .await
+        .expect("Failed to build test core");
+
+    let core = Arc::new(core);
+
+    // Start the core
+    core.start().await.expect("Failed to start core");
+
+    let read_only = Arc::new(false);
+    let config_persistence: Option<Arc<drasi_server::persistence::ConfigPersistence>> = None;
+
+    let instance_id = "test-server";
+
+    // Create registry with the test instance
+    let mut instances_map = indexmap::IndexMap::new();
+    instances_map.insert(instance_id.to_string(), core.clone());
+    let registry = InstanceRegistry::from_map(instances_map);
+
+    // Use the production router builder
+    let mut plugin_registry = PluginRegistry::new();
+    drasi_server::register_core_plugins(&mut plugin_registry);
+    let v1_router = build_v1_router(
+        registry,
+        read_only,
+        config_persistence,
+        Arc::new(plugin_registry),
+    );
+
+    let router = Router::new()
+        // Health endpoint
+        .route("/health", axum::routing::get(handlers::health_check))
+        .merge(v1_router);
+
+    let registry2 = TestComponentRegistry {
+        log_source,
+        reaction: test_reaction,
+    };
+
+    (router, core, registry2)
+}
+
+struct TestComponentRegistry {
+    log_source: test_support::mock_components::MockSource,
+    reaction: test_support::mock_components::MockReaction,
+}
+
+#[tokio::test]
+async fn test_health_endpoint() {
+    let (router, _, _registry) = create_test_router().await;
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["status"], "ok");
+    assert!(json["timestamp"].is_string());
+}
+
+#[tokio::test]
+async fn test_instances_endpoint() {
+    let (router, _, _registry) = create_test_router().await;
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/instances")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["success"], true);
+    let instances = json["data"].as_array().unwrap();
+    let test_instance = instances.iter().find(|i| i["id"] == "test-server").unwrap();
+
+    // Verify richer InstanceDto fields
+    assert!(test_instance["source_count"].as_u64().unwrap() >= 3); // test-source, query-source, auto-source
+    assert!(test_instance["reaction_count"].as_u64().unwrap() >= 2); // test-reaction, auto-reaction
+    assert!(test_instance["links"]["self"].is_string());
+    assert!(test_instance["links"]["sources"]
+        .as_str()
+        .unwrap()
+        .contains("/sources"));
+    assert!(test_instance["links"]["queries"]
+        .as_str()
+        .unwrap()
+        .contains("/queries"));
+    assert!(test_instance["links"]["reactions"]
+        .as_str()
+        .unwrap()
+        .contains("/reactions"));
+}
+
+#[tokio::test]
+async fn test_source_lifecycle_via_api() {
+    let (router, _, _registry) = create_test_router().await;
+    let base = format!("/instances/{}", "test-server");
+
+    // List sources (pre-registered via builder)
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{base}/sources"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+    assert!(json["data"].is_array());
+    // Should have pre-registered sources
+    assert!(!json["data"].as_array().unwrap().is_empty());
+    assert!(json["data"][0]["links"]["self"].is_string());
+    assert!(json["data"][0]["links"]["full"].is_string());
+    assert!(json["data"][0]["links"]["self"].is_string());
+    assert!(json["data"][0]["links"]["full"].is_string());
+
+    // Get specific source
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{base}/sources/test-source"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["data"]["id"], "test-source");
+    assert!(json["data"]["links"]["self"].is_string());
+    assert!(json["data"]["links"]["full"].is_string());
+
+    // Source is already running (auto-started on first startup)
+    // Stop the source first to test lifecycle operations
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{base}/sources/test-source/stop"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+
+    // Start the source - should succeed (mock sources support lifecycle operations)
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{base}/sources/test-source/start"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+
+    // Stop the source - should succeed again
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{base}/sources/test-source/stop"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+
+    // Delete the source
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("{base}/sources/test-source"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_query_lifecycle_via_api() {
+    let (router, core, _registry) = create_test_router().await;
+    let base = "/instances/test-server";
+
+    // Create a query using DrasiLib (not via API - queries can still be created dynamically)
+    let query_config = Query::cypher("test-query")
+        .query("MATCH (n:Node) RETURN n")
+        .from_source("query-source")
+        .auto_start(false)
+        .build();
+    core.add_query(query_config.clone()).await.unwrap();
+
+    // List queries via API
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{base}/queries"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+    assert!(json["data"].is_array());
+
+    // Delete the query via API
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("{base}/queries/test-query"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_reaction_lifecycle_via_api() {
+    let (router, _core, _registry) = create_test_router().await;
+    let base = "/instances/test-server";
+
+    // Reactions are pre-registered via builder, test listing them
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{base}/reactions"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["data"].is_array());
+    // Should have pre-registered reactions
+    assert!(!json["data"].as_array().unwrap().is_empty());
+    assert!(json["data"][0]["links"]["self"].is_string());
+    assert!(json["data"][0]["links"]["full"].is_string());
+
+    // Get specific reaction
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{base}/reactions/test-reaction"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["data"]["id"], "test-reaction");
+    assert!(json["data"]["links"]["self"].is_string());
+    assert!(json["data"]["links"]["full"].is_string());
+}
+
+#[tokio::test]
+async fn test_source_logs_snapshot_via_api() {
+    let (router, _core, registry) = create_test_router().await;
+
+    // Use log-source (not test-source) to avoid races with the lifecycle test
+    // which deletes test-source and clears its log history in the global registry.
+    let (history, mut rx) = _core
+        .subscribe_source_logs("log-source")
+        .await
+        .expect("subscribe_source_logs failed");
+
+    registry.log_source.emit_log("source log entry").await;
+
+    // If the entry isn't already in the history snapshot, wait for it on the receiver
+    if !history.iter().any(|e| e.message == "source log entry") {
+        let deadline = Duration::from_secs(5);
+        timeout(deadline, async {
+            loop {
+                match rx.recv().await {
+                    Ok(msg) if msg.message == "source log entry" => return,
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        panic!("Log broadcast channel closed unexpectedly")
+                    }
+                }
+            }
+        })
+        .await
+        .expect("Timed out waiting for source log entry");
+    }
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/instances/test-server/sources/log-source/logs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+    assert!(json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["message"] == "source log entry"));
+}
+
+#[tokio::test]
+async fn test_reaction_logs_snapshot_via_api() {
+    let (router, _core, registry) = create_test_router().await;
+
+    // Subscribe first to get the broadcast receiver, then emit the log.
+    let (history, mut rx) = _core
+        .subscribe_reaction_logs("test-reaction")
+        .await
+        .expect("subscribe_reaction_logs failed");
+
+    registry.reaction.emit_log("reaction log entry").await;
+
+    // If the entry isn't already in the history snapshot, wait for it on the receiver
+    if !history.iter().any(|e| e.message == "reaction log entry") {
+        let deadline = Duration::from_secs(5);
+        timeout(deadline, async {
+            loop {
+                match rx.recv().await {
+                    Ok(msg) if msg.message == "reaction log entry" => return,
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        panic!("Log broadcast channel closed unexpectedly")
+                    }
+                }
+            }
+        })
+        .await
+        .expect("Timed out waiting for reaction log entry");
+    }
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/instances/test-server/reactions/test-reaction/logs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+    assert!(json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["message"] == "reaction log entry"));
+}
+
+#[tokio::test]
+async fn test_source_logs_stream_via_api() {
+    let (router, _core, registry) = create_test_router().await;
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/instances/test-server/sources/log-source/logs/stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    registry.log_source.emit_log("streamed source log").await;
+
+    let body = response.into_body();
+    let mut stream = body.into_data_stream();
+    let payload = timeout(Duration::from_secs(10), async move {
+        let mut collected = String::new();
+        while let Some(Ok(chunk)) = stream.next().await {
+            collected.push_str(&String::from_utf8_lossy(&chunk));
+            if collected.contains("streamed source log") {
+                break;
+            }
+        }
+        collected
+    })
+    .await
+    .expect("Timed out waiting for log stream");
+
+    assert!(payload.contains("streamed source log"));
+}
+
+// Dynamic source/reaction creation via API requires registered plugin descriptors
+// which are only available when the full plugin system is loaded. These are covered
+// by the plugin smoke tests (make test-smoke) instead.
+
+#[tokio::test]
+async fn test_error_handling() {
+    let (router, _, _registry) = create_test_router().await;
+    let base = "/instances/test-server";
+
+    // Try to get non-existent source
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{base}/sources/non-existent"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // Try to start non-existent source
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("{base}/sources/non-existent/start"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_query_results_endpoint() {
+    let (router, core, _registry) = create_test_router().await;
+    let base = "/instances/test-server";
+
+    // Add a query
+    let query_config = Query::cypher("results-query")
+        .query("MATCH (n) RETURN n")
+        .from_source("query-source")
+        .auto_start(false)
+        .build();
+    core.add_query(query_config.clone()).await.unwrap();
+
+    // Try to get results - should return error (not exposed in public API)
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{base}/queries/results-query/results"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], false);
+    // The error should contain some information about why results can't be fetched
+    assert!(json["error"].is_string());
+
+    // Try to get results for non-existent query - should return 404
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{base}/queries/non-existent/results"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_query_attach_sse_stream() {
+    let (router, core, _registry) = create_test_router().await;
+    let base = "/instances/test-server";
+
+    // Add a query to attach to
+    let query_config = Query::cypher("attach-query")
+        .query("MATCH (n) RETURN n")
+        .from_source("query-source")
+        .auto_start(false)
+        .build();
+    core.add_query(query_config.clone()).await.unwrap();
+
+    // Start an attach stream request
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{base}/queries/attach-query/attach"))
+                .header("Accept", "text/event-stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Should succeed
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Content-Type should be text/event-stream
+    let content_type = response.headers().get("content-type").unwrap();
+    assert!(content_type.to_str().unwrap().contains("text/event-stream"));
+}
+
+#[tokio::test]
+async fn test_query_attach_not_found() {
+    let (router, _core, _registry) = create_test_router().await;
+    let base = "/instances/test-server";
+
+    // Try to attach to non-existent query
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{base}/queries/non-existent/attach"))
+                .header("Accept", "text/event-stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_query_attach_creates_temporary_reaction() {
+    let (router, core, _registry) = create_test_router().await;
+    let base = "/instances/test-server";
+
+    // Add a query to attach to
+    let query_config = Query::cypher("attach-reaction-test")
+        .query("MATCH (n) RETURN n")
+        .from_source("query-source")
+        .auto_start(false)
+        .build();
+    core.add_query(query_config.clone()).await.unwrap();
+
+    // Count reactions before attach
+    let reactions_before = core.list_reactions().await.unwrap_or_default().len();
+
+    // Start an attach stream request
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{base}/queries/attach-reaction-test/attach"))
+                .header("Accept", "text/event-stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // A temporary reaction should have been created
+    let reactions_after = core.list_reactions().await.unwrap_or_default();
+    assert!(reactions_after.len() > reactions_before);
+
+    // Verify the temporary reaction exists with __attach_ prefix
+    let attach_reaction = reactions_after
+        .iter()
+        .find(|(id, _)| id.starts_with("__attach_attach-reaction-test_"));
+    assert!(
+        attach_reaction.is_some(),
+        "Expected temporary attach reaction to be created"
+    );
+}

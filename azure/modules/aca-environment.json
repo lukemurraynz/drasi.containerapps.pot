@@ -1,0 +1,69 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.42.1.51946",
+      "templateHash": "15395405920666409510"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region"
+      }
+    },
+    "namePrefix": {
+      "type": "string",
+      "metadata": {
+        "description": "Name prefix"
+      }
+    },
+    "logAnalyticsWorkspaceResourceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Log Analytics workspace resource ID"
+      }
+    },
+    "infrastructureSubnetResourceId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional subnet resource ID for ACA VNet injection. Leave empty for public environment."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "metadata": {
+        "description": "Tags"
+      }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.App/managedEnvironments",
+      "apiVersion": "2024-03-01",
+      "name": "[format('{0}-aca-env', parameters('namePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "vnetConfiguration": "[if(empty(parameters('infrastructureSubnetResourceId')), null(), createObject('infrastructureSubnetId', parameters('infrastructureSubnetResourceId'), 'internal', false()))]",
+        "appLogsConfiguration": {
+          "destination": "log-analytics",
+          "logAnalyticsConfiguration": {
+            "customerId": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', last(split(parameters('logAnalyticsWorkspaceResourceId'), '/'))), '2023-09-01').customerId]",
+            "sharedKey": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', last(split(parameters('logAnalyticsWorkspaceResourceId'), '/'))), '2023-09-01').primarySharedKey]"
+          }
+        }
+      },
+      "tags": "[parameters('tags')]"
+    }
+  ],
+  "outputs": {
+    "managedEnvironmentResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-aca-env', parameters('namePrefix')))]"
+    }
+  }
+}

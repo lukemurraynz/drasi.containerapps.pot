@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.42.1.51946",
+      "templateHash": "17199064699512026956"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region"
+      }
+    },
+    "namePrefix": {
+      "type": "string",
+      "metadata": {
+        "description": "Name prefix for resources"
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {},
+      "metadata": {
+        "description": "Tags"
+      }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Cache/redis",
+      "apiVersion": "2024-03-01",
+      "name": "[format('{0}-redis', parameters('namePrefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "Basic",
+          "family": "C",
+          "capacity": 0
+        },
+        "enableNonSslPort": false,
+        "minimumTlsVersion": "1.2",
+        "redisConfiguration": {}
+      },
+      "tags": "[parameters('tags')]"
+    }
+  ],
+  "outputs": {
+    "redisHost": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Cache/redis', format('{0}-redis', parameters('namePrefix'))), '2024-03-01').hostName]"
+    },
+    "redisId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Cache/redis', format('{0}-redis', parameters('namePrefix')))]"
+    },
+    "redisPrimaryKey": {
+      "type": "string",
+      "value": "[listKeys(resourceId('Microsoft.Cache/redis', format('{0}-redis', parameters('namePrefix'))), '2024-03-01').primaryKey]"
+    }
+  }
+}

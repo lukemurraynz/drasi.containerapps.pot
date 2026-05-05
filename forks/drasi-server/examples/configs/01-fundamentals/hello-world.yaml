@@ -1,0 +1,85 @@
+# Copyright 2025 The Drasi Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# =============================================================================
+# Hello World - Absolute Minimum Drasi Server Configuration
+# =============================================================================
+#
+# This is the simplest possible Drasi Server configuration. It demonstrates:
+# - Basic server settings (host, port, logging)
+# - A mock source that generates test data
+# - A simple continuous query
+# - A log reaction that outputs to the console
+#
+# Run with: cargo run -- --config examples/configs/01-fundamentals/hello-world.yaml
+#
+# Expected behavior:
+# - Server starts on http://localhost:8080
+# - Mock source generates sensor data every 5 seconds
+# - Query matches all sensors and returns their data
+# - Log reaction prints results to console
+
+apiVersion: drasi.io/v1
+id: hello-world-server
+host: "0.0.0.0"
+port: 8080
+logLevel: info
+persistConfig: false
+autoInstallPlugins: true
+plugins:
+  - ref: source/mock
+  - ref: reaction/log
+
+# A simple mock source that generates test data
+# dataType is an enum with the following options:
+#   - { type: sensorReading, sensorCount: N } - SensorReading nodes with sensor_id, temperature, humidity
+#     (first reading per sensor = INSERT, subsequent = UPDATE, default sensorCount: 5)
+#   - { type: counter } - Counter nodes with sequential value
+#   - { type: generic } - Generic nodes with random value and message
+sources:
+  - kind: mock
+    id: test-source
+    autoStart: true
+    dataType:
+      type: sensorReading
+    intervalMs: 3000
+
+# A query that matches all data from the source
+# Note: The mock source with type: sensorReading generates SensorReading nodes
+queries:
+  - id: all-sensors
+    autoStart: true
+    query: |
+      MATCH (s:SensorReading)
+      RETURN s.sensor_id AS SensorId, s.temperature AS Temperature, s.humidity AS Humidity
+    queryLanguage: Cypher
+    sources:
+      - sourceId: test-source
+
+# Log the query results to console
+# Template variables: query_name, after (for added/updated), before (for deleted/updated)
+# Access result fields with dot notation: {{after.FieldName}}
+reactions:
+  - kind: log
+    id: console-logger
+    queries:
+      - all-sensors
+    autoStart: true
+    defaultTemplate:
+      added:
+        template: "[+] Sensor {{after.SensorId}}: temp={{after.Temperature}}°C humidity={{after.Humidity}}%"
+      updated:
+        template: "[~] Sensor {{after.SensorId}}: temp={{after.Temperature}}°C humidity={{after.Humidity}}%"
+      deleted:
+        template: "[-] Sensor {{before.SensorId}} removed"

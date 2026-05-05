@@ -1,0 +1,145 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.42.1.51946",
+      "templateHash": "5524539241290803216"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region"
+      }
+    },
+    "namePrefix": {
+      "type": "string",
+      "metadata": {
+        "description": "Name prefix for resources"
+      }
+    },
+    "vnetName": {
+      "type": "string",
+      "metadata": {
+        "description": "Virtual network name for private subnet creation and DNS zone linking"
+      }
+    },
+    "postgresSubnetResourceId": {
+      "type": "string",
+      "metadata": {
+        "description": "PostgreSQL subnet resource ID (from network module)"
+      }
+    },
+    "postgresAdminLogin": {
+      "type": "string",
+      "metadata": {
+        "description": "PostgreSQL administrator login"
+      }
+    },
+    "postgresAdminPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "PostgreSQL administrator password"
+      }
+    },
+    "postgresDatabaseName": {
+      "type": "string",
+      "metadata": {
+        "description": "Database name to create"
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {},
+      "metadata": {
+        "description": "Tags"
+      }
+    }
+  },
+  "variables": {
+    "serverName": "[format('{0}-postgres', parameters('namePrefix'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2020-06-01",
+      "name": "[format('{0}.private.postgres.database.azure.com', variables('serverName'))]",
+      "location": "global",
+      "tags": "[parameters('tags')]"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2020-06-01",
+      "name": "[format('{0}/{1}', format('{0}.private.postgres.database.azure.com', variables('serverName')), format('{0}-vnet-link', variables('serverName')))]",
+      "location": "global",
+      "properties": {
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
+        },
+        "registrationEnabled": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('{0}.private.postgres.database.azure.com', variables('serverName')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers",
+      "apiVersion": "2024-08-01",
+      "name": "[variables('serverName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_B1ms",
+        "tier": "Burstable"
+      },
+      "properties": {
+        "version": "16",
+        "administratorLogin": "[parameters('postgresAdminLogin')]",
+        "administratorLoginPassword": "[parameters('postgresAdminPassword')]",
+        "network": {
+          "delegatedSubnetResourceId": "[parameters('postgresSubnetResourceId')]",
+          "privateDnsZoneArmResourceId": "[resourceId('Microsoft.Network/privateDnsZones', format('{0}.private.postgres.database.azure.com', variables('serverName')))]"
+        },
+        "storage": {
+          "storageSizeGB": 32
+        },
+        "backup": {
+          "backupRetentionDays": 7,
+          "geoRedundantBackup": "Disabled"
+        },
+        "highAvailability": {
+          "mode": "Disabled"
+        },
+        "authConfig": {
+          "activeDirectoryAuth": "Disabled",
+          "passwordAuth": "Enabled"
+        }
+      },
+      "tags": "[parameters('tags')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('{0}.private.postgres.database.azure.com', variables('serverName')))]",
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', format('{0}.private.postgres.database.azure.com', variables('serverName')), format('{0}-vnet-link', variables('serverName')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.DBforPostgreSQL/flexibleServers/databases",
+      "apiVersion": "2024-08-01",
+      "name": "[format('{0}/{1}', variables('serverName'), parameters('postgresDatabaseName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('serverName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "postgresHost": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('serverName')), '2024-08-01').fullyQualifiedDomainName]"
+    },
+    "postgresServerId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('serverName'))]"
+    }
+  }
+}

@@ -1,0 +1,177 @@
+# =============================================================================
+# OS and editor artifacts
+# =============================================================================
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# JetBrains
+.idea/
+
+# Visual Studio (not .vscode — shared config is committed)
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.DotSettings.user
+.devpod-internal/
+
+# =============================================================================
+# C# / .NET
+# =============================================================================
+[Bb]in/
+[Oo]bj/
+TestResults/
+*.nupkg
+*.snupkg
+*.pdb
+
+# =============================================================================
+# TypeScript / JavaScript / Node
+# =============================================================================
+node_modules/
+dist/
+build/
+.next/
+.nuxt/
+*.tsbuildinfo
+.turbo/
+coverage/
+.nyc_output/
+
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+
+# =============================================================================
+# Rust
+# =============================================================================
+target/
+
+# =============================================================================
+# Terraform / IaC
+# =============================================================================
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+.terragrunt-cache/
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# .terraform.lock.hcl is NOT ignored (should be committed)
+
+# =============================================================================
+# Secrets and environment
+# =============================================================================
+.env
+.env.*
+!.env.example
+!.env.template
+*.pfx
+*.key
+
+# =============================================================================
+# Logs
+# =============================================================================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.copilot-tracking/
+
+# =============================================================================
+# Azure Bicep compiled outputs (generated, not committed)
+# =============================================================================
+azure/**/*.json
+!azure/**/*.template.json
+!azure/**/*.json.tpl
+
+# =============================================================================
+# E2E and diagnostic test output
+# =============================================================================
+.e2e-results-*.txt
+api_*.json
+api_*.txt
+console_logs*.json
+drasi_*.txt
+drasi_*.json
+repro_*.txt
+repro_*.json
+source_*.json
+source_*.txt
+query_*.json
+query_*.txt
+reaction_*.json
+reaction_*.txt
+stabilize_*.txt
+stabilize_*.json
+system_logs.json
+test_source_payload.json
+e2e_source.json
+*.http.txt
+
+# =============================================================================
+# Temporary scratch files
+# =============================================================================
+[a-z].txt
+[a-z][0-9].txt
+res.txt
+resp.txt
+curl_output.txt
+instances_output.txt
+sql_evidence.txt
+q_out.txt
+s_out.txt
+*_out.txt
+
+# =============================================================================
+# Local configuration backups and scratch YAML
+# =============================================================================
+app_backup.yaml
+app_current.yaml
+app_updated.yaml
+job.yaml
+job_delta.yaml
+job_updated.yaml
+job_exec_delta.json
+job_delta_updated.yaml
+deploy_probe_fix.json
+source_rebuild.json
+final_*.json
+gated_source*.json
+source_after_stabilize*.json
+source_final*.json
+source_min*.json
+source_resp.json
+source_safe*.json
+query_body.json
+query_safe.json
+
+# =============================================================================
+# PowerShell temporary
+# =============================================================================
+*.ps1.tmp
+*.ps1.bak
+
+# =============================================================================
+# Deployment logs (keep only in .deployment/)
+# =============================================================================
+deploy_*.log
+provision_*.log
+redeploy_*.log
