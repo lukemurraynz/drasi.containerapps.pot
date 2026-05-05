@@ -1,4 +1,4 @@
-# Production multi-replica scale-out architecture - DRAFT TO DO 
+# Production multi-replica scale-out architecture
 
 ## Goal
 
@@ -10,6 +10,8 @@ Define a production-safe architecture for scaling Drasi on Azure Container Apps 
 - Durable state path is `stateStore.kind: redb` at `/drasi-persist/state.redb`.
 - Azure Files provides durable config and state volume for restart and revision survivability.
 - Redis is used for cache and acceleration, not as the authoritative state store.
+
+This baseline is correct for single replica, but multi-replica production needs a stricter tiered state model.
 
 ## Target architecture
 
@@ -36,12 +38,21 @@ Introduce explicit partition ownership for worker scale-out.
 
 ### 3. State strategy
 
-- Authoritative state
-    - Checkpoints, partition ownership, and replay metadata in PostgreSQL.
-- Worker-local durable snapshot
-    - Optional local `redb` file for fast resume of owned partitions.
-- Redis
-    - Cache, dedupe acceleration, and hot-path ephemeral state only.
+- Tier 1 local ephemeral state (`emptyDir`)
+    - Use for replay buffers, temporary joins, and short-lived worker scratch data.
+    - Treat as disposable on restart.
+- Tier 2 shared ephemeral cache (Redis)
+    - Use for dedupe keys, hot read caching, and rebalance hints.
+    - Require TTL and bounded memory policy.
+- Tier 3 authoritative durable state (PostgreSQL)
+    - Store checkpoints, partition ownership, lease metadata, and replay control metadata.
+    - Use as the only commit authority for correctness-critical decisions.
+
+### 3.1 Write authority rules
+
+- Only PostgreSQL can advance authoritative checkpoints and ownership epochs.
+- Redis and `emptyDir` can accelerate reads and recomputation, but cannot commit authority state.
+- Worker restart must recover from PostgreSQL checkpoint state, not from cache state.
 
 Do not use a shared multi-writer file as the single source of truth.
 
@@ -79,6 +90,7 @@ Use these as starting points and tune with production data.
 | Duplicate ownership of same partition | Potential conflicting writes          | Single-owner lease validation and epoch checks             |
 | Checkpoint regression                 | Replay inconsistency risk             | Monotonic checkpoint constraints and rejection path        |
 | Redis outage                          | Cache degradation only                | Keep authoritative state in PostgreSQL, fail soft on cache |
+| `emptyDir` loss on restart            | Local scratch state is discarded      | Rebuild from PostgreSQL checkpoint and replay              |
 | Revision rollout during load          | Temporary ownership movement          | Controlled rollout with lease stabilization checks         |
 
 ## Rollout plan
@@ -122,18 +134,21 @@ This checklist extends `docs/drasi-state-contract.md`.
 - [ ] Two consecutive replay runs produce identical result snapshots.
 - [ ] Checkpoint progression is monotonic during rebalance.
 - [ ] Restart plus revision rollout yields identical end state.
+- [ ] Restart with `emptyDir` loss still converges to the same end state.
 
 ### Gate C: Conflict handling
 
 - [ ] Conflict strategy implemented and tested under concurrency.
 - [ ] Zero lost updates in conflict simulation.
 - [ ] Conflict metrics and alerts are active.
+- [ ] Conflicts do not promote Redis or `emptyDir` data to authoritative state.
 
 ### Promotion gate
 
 - [ ] `/health` remains stable during scale events.
 - [ ] `/api/v1/docs/` and `/api/v1/openapi.json` remain available during scale events.
 - [ ] Source, query, and reaction lifecycle operations pass during rebalancing.
+- [ ] Redis outage test confirms degraded performance without correctness loss.
 - [ ] Rollback plan validated for replica reduction and lease reset.
 
 ## Decision rule
