@@ -54,7 +54,33 @@ Introduce explicit partition ownership for worker scale-out.
 - Redis and `emptyDir` can accelerate reads and recomputation, but cannot commit authority state.
 - Worker restart must recover from PostgreSQL checkpoint state, not from cache state.
 
+### 3.2 Performance tweak for faster recovery
+
+Add per-partition local snapshots on workers to reduce cold replay time after rebalance and restart.
+
+- Store snapshot files in `emptyDir` as non-authoritative acceleration artifacts.
+- Rebuild snapshots from PostgreSQL checkpoints when `emptyDir` is lost.
+- Keep snapshot metadata keyed by partition and checkpoint epoch.
+- Reject snapshot restore when epoch does not match authoritative ownership state.
+
 Do not use a shared multi-writer file as the single source of truth.
+
+## Data store choice for authoritative state
+
+### Option comparison
+
+| Option                                        | Strengths for Drasi                                                                                                           | Risks and trade-offs                                                                                                                                                 | Fit for this architecture                                                                    |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Azure Database for PostgreSQL Flexible Server | Strong transactional semantics, row-level locking, mature lease and checkpoint patterns, operational familiarity in this repo | Vertical scaling limits per node, requires indexing discipline under high write volume                                                                               | Best current fit                                                                             |
+| Azure Cosmos DB                               | Elastic scale, global distribution, low-latency point reads                                                                   | Partition design complexity, RU cost sensitivity for lease and checkpoint write bursts, weaker relational coordination patterns for multi-step ownership transitions | Good for very high global scale if redesigned for document and partition-first control state |
+| Azure SQL Database                            | Strong transactional support and tooling                                                                                      | Higher cost for similar throughput profile in this workload, less alignment with current Drasi and CDC flow in this repo                                             | Acceptable fallback, not preferred here                                                      |
+| Azure Table Storage or Blob-only metadata     | Low cost and simple primitives                                                                                                | Limited transactional semantics and coordination guarantees, higher implementation burden for correctness controls                                                   | Not recommended for authoritative control state                                              |
+
+### Recommendation
+
+**Decision: Keep PostgreSQL as the authoritative control-state store for this productionization phase.**
+
+Use PostgreSQL for checkpoints, ownership leases, and replay metadata while using Redis and `emptyDir` only as acceleration layers. Revisit Cosmos DB only if measured partition scale and geo-distribution needs exceed PostgreSQL operational limits.
 
 ### 4. Event ingress and worker scaling
 
